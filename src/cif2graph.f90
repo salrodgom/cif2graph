@@ -2,11 +2,14 @@ program zif_cif2gin
  use iso_fortran_env
  implicit none
 ! locals
- integer             :: i,j,k,ierr,nn
+ integer             :: i,j,k,l,ierr,nn
+ real                :: s,v1(3),v2(3)
 ! variables
  integer             :: num_args
  integer             :: n_atoms = 0
  real                :: cell_0(1:6) = 0.0
+ real                :: r1=1.0
+ real                :: r2=2.0
  real                :: rv(3,3),vr(3,3)
  character(len=100)  :: line
  character(len=20)   :: spam
@@ -17,15 +20,15 @@ program zif_cif2gin
  real,allocatable    :: xcrystal(:,:),xcartes(:,:),charge(:)
  real,allocatable    :: DistanceMatrix(:,:)
  character(len=100), dimension(:), allocatable :: args
- logical,dimension(:,:),allocatable            :: adj
- character(len=4),allocatable                  :: label(:)
+ integer,dimension(:,:),allocatable            :: adj
+ character(len=4),allocatable                  :: label(:),newlabel(:)
  num_args = command_argument_count()
  allocate(args(num_args))
  do i = 1, num_args
   call get_command_argument(i,args(i))
  end do
- write(6,'(a,1x,i2)')'Arguments:',command_argument_count()
- write(6,'(a)')( args(i),i=1,num_args)
+ !write(6,'(a,1x,i2)')'Arguments:',command_argument_count()
+ !write(6,'(a)')( args(i),i=1,num_args)
  if(num_args==0) then
   call print_help()
   stop
@@ -38,10 +41,9 @@ program zif_cif2gin
    case ('-c','--cif')
     CIFFilename=args(i+1)
     filename=CIFFilename(1:Clen_trim(CIFFilename)-4)
-    write(6,'(a)') filename
+    !write(6,'(a)') filename
   end select
  end do
- beta = 1.0/(k_B*temperature)
  open(100,file=CIFfilename,status='old',iostat=ierr)
  if(ierr/=0) stop 'Error opening CIF file'
  read_cif: do
@@ -81,14 +83,14 @@ program zif_cif2gin
   n_atoms=n_atoms+1
  end do read_natoms
 !
- allocate(xcrystal(3,n_atoms),xcartes(3,n_atoms))
+ allocate(xcrystal(0:3,n_atoms),xcartes(3,n_atoms))
  allocate(charge(n_atoms))
  allocate(DistanceMatrix(n_atoms,n_atoms))
  allocate(label(n_atoms))
  allocate(adj(n_atoms,n_atoms))
 !
  rewind(100)
- write(6,*)'Atoms:',n_atoms
+ write(6,*)'# Atoms:',n_atoms
  do
   read(100,'(a)',iostat=ierr) line
   if(ierr/=0) exit
@@ -101,16 +103,35 @@ program zif_cif2gin
   i=i+1
   read(line,*)label(i),( xcrystal(j,i),j=1,3),charge(i)
   do j=1,3
-   xcrystal(j,i)=MOD(xcrystal(j,i)+100.0,1.0)
+   !xcrystal(j,i)=MOD(xcrystal(j,i)+100.0,1.0)
    xcartes(j,i) =rv(j,1)*xcrystal(1,i) + rv(j,2)*xcrystal(2,i)+rv(j,3)*xcrystal(3,i)
   end do
-  write(6,'(a4,1x,3(f14.12,1x),3(f14.7,1x))',ADVANCE='yes') &
-   label(i),( xcrystal(j,i),j=1,3),( xcartes(j,i),j=1,3)
+  !write(6,'(a4,1x,3(f14.12,1x),3(f14.7,1x))',ADVANCE='yes') &
+  ! label(i),( xcrystal(j,i),j=1,3),( xcartes(j,i),j=1,3)
  end do read_atoms
- call make_dist_matrix(n_atoms,cell_0,rv,vr,xcrystal,DistanceMatrix)
- write(6,*)'=========='
+ !call make_dist_matrix(n_atoms,cell_0,rv,vr,xcrystal,DistanceMatrix)
+ !write(6,*)'=========='
  close(100)
 ! Analysis:
+ adj=0
+ connectivity: do i=1,n_atoms
+  k=0
+  do j=1,n_atoms
+   forall (l=1:3)
+    v1(l)=xcrystal(l,i)
+    v2(l)=xcrystal(l,j)
+   end forall
+   call make_distances(cell_0,v1,v2,rv,s)
+   DistanceMatrix(i,j)=s
+   DistanceMatrix(j,i)=s
+   if( s>r1.and.s<r2 ) then
+    adj(i,j)=1
+    k=k+1
+   end if
+  end do
+  xcrystal(0,i)=k
+ end do connectivity
+ WRITE(6,'(1000(I1))')(int(xcrystal(0,k)),k=1,n_atoms)
  call write_graph()
 !
  deallocate(xcrystal)
@@ -118,11 +139,17 @@ program zif_cif2gin
  deallocate(DistanceMatrix)
  deallocate(charge)
  deallocate(label)
- deallocate(newlabel)
  contains
  subroutine write_graph()
   implicit none
-  integer  i
+  integer  i,j
+  do i=1,n_atoms
+   do j=i+1,n_atoms
+    if(adj(i,j)==1.or.adj(j,i)==1)then
+     write(6,'(i4,1x,i4,1x,f10.8,1x,a2,1x,a2)') i,j,DistanceMatrix(i,j),label(i),label(j)
+    end if
+   end do
+  end do
  end subroutine write_graph
  PURE INTEGER FUNCTION Clen(s)      ! returns same result as LEN unless:
  CHARACTER(*),INTENT(IN) :: s       ! last non-blank char is null
@@ -180,18 +207,18 @@ program zif_cif2gin
  rv(3,2) = 0.0
  rv(3,3) = sqrt( cell_0(3)*cell_0(3) - rv(1,3)*rv(1,3) - rv(2,3)*rv(2,3))
  call inverse(rv,vr,3)
- WRITE(6,'(a)') 'Cell:'
- WRITE(6,'(6F14.7)')( cell_0(j), j=1,6 )
- WRITE(6,'(a)')'Linear Transformation Operator:'
- DO i=1,3
-  WRITE(6,'(F14.7,F14.7,F14.7)')( rv(i,j), j=1,3 )
- ENDDO
- WRITE(6,'(a)')'----------------------------------------'
- WRITE(6,'(a)')'Inverse Linear Transformation Operator:'
- DO i=1,3
-  WRITE(6,'(F14.7,F14.7,F14.7)')( vr(i,j), j=1,3 )
- ENDDO
- WRITE(6,'(a)')'----------------------------------------'
+ !WRITE(6,'(a)') 'Cell:'
+ !WRITE(6,'(6F14.7)')( cell_0(j), j=1,6 )
+ !WRITE(6,'(a)')'Linear Transformation Operator:'
+ !DO i=1,3
+ ! WRITE(6,'(F14.7,F14.7,F14.7)')( rv(i,j), j=1,3 )
+ !ENDDO
+ !WRITE(6,'(a)')'----------------------------------------'
+ !WRITE(6,'(a)')'Inverse Linear Transformation Operator:'
+ !DO i=1,3
+ ! WRITE(6,'(F14.7,F14.7,F14.7)')( vr(i,j), j=1,3 )
+ !ENDDO
+ !WRITE(6,'(a)')'----------------------------------------'
  RETURN
  END SUBROUTINE cell
 !
@@ -350,5 +377,8 @@ end subroutine make_dist_matrix
   END FORALL
   DISTANCE = sqrt(dist(1)*dist(1) + dist(2)*dist(2) + dist(3)*dist(3))
  END FUNCTION
+ subroutine print_help()
+  write(6,*)'help!'
+ end subroutine 
 end program zif_cif2gin
 
